@@ -8,6 +8,8 @@ import { Address } from "~~/components/scaffold-eth";
 import CompassIcon from "~~/icons/CompassIcon";
 import DarkBugAntIcon from "~~/icons/DarkBugAntIcon";
 import LightBugAntIcon from "~~/icons/LightBugAntIcon";
+import { MultiSendIcon } from "~~/icons/MultiSendIcon";
+import PortfolioIcon from "~~/icons/PortfolioIcon";
 
 const Home: NextPage = () => {
   const { address: connectedAddress } = useAccount();
@@ -67,7 +69,23 @@ const Home: NextPage = () => {
             backgroundColor: isDarkMode ? "#050505" : "white",
           }}
         >
-          <div className="flex justify-center items-center h-full gap-12 flex-col sm:flex-row">
+          <div className="flex justify-center items-center h-full gap-8 flex-col sm:flex-row flex-wrap">
+            {/* Portfolio Tracker Card */}
+            <Card
+              icon={<PortfolioIcon />}
+              description={<>Track your token balances and portfolio value</>}
+              linkHref="/portfolio"
+              linkText="Portfolio Tracker"
+              isDarkMode={isDarkMode}
+            />
+            {/* Multi-Send Tool Card */}
+            <Card
+              icon={<MultiSendIcon className="w-8 h-8" />}
+              description={<>Send tokens to multiple recipients efficiently</>}
+              linkHref="/multisend"
+              linkText="Multi-Send Tool"
+              isDarkMode={isDarkMode}
+            />
             {/* Debug Contracts Card */}
             <Card
               icon={isDarkMode ? <DarkBugAntIcon /> : <LightBugAntIcon />}
