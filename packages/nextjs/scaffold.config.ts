@@ -19,8 +19,9 @@ export const DEFAULT_ALCHEMY_API_KEY = "oKxs-03sij-U_N0iOlrSsZFr29-IqbuF";
 const scaffoldConfig = {
   // The networks on which your DApp is live
   targetNetworks: [
+    chains.arbitrumSepolia,
     // chains.arbitrumNitro, // Local development chain
-    chains.arbitrum, // Mainnet Arbitrum for real token balances
+    // chains.arbitrum, // Mainnet Arbitrum for real token balances
     // customChains.baseClient,
     // customChains.polygonClient,
     // customChains.avalancheClient,
