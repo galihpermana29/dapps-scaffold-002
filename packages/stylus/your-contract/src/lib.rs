@@ -8,7 +8,6 @@
 //!
 
 // Allow `cargo stylus export-abi` to generate a main function.
-#![cfg_attr(not(any(test, feature = "export-abi")), no_main)]
 #![cfg_attr(not(any(test, feature = "export-abi")), no_std)]
 
 #[macro_use]
@@ -16,6 +15,7 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::ptr;
 
 /// Import items from the SDK. The prelude contains common traits and macros.
 use stylus_sdk::{
@@ -44,9 +44,13 @@ impl From<ownable::Error> for Error {
     }
 }
 
-// Define the GreetingChange event
+// Define events
 sol! {
     event GreetingChange(address indexed greetingSetter, string newGreeting, bool premium, uint256 value);
+    event NativeTokenSent(address indexed from, address indexed to, uint256 amount);
+    event BatchNativeTokenSent(address indexed from, uint256 totalAmount, uint256 recipientCount);
+    event ERC20TokenSent(address indexed token, address indexed from, address indexed to, uint256 amount);
+    event BatchERC20TokenSent(address indexed token, address indexed from, uint256 totalAmount, uint256 recipientCount);
 }
 
 // Define persistent storage using the Solidity ABI.
@@ -59,6 +63,10 @@ sol_storage! {
         bool premium;
         uint256 total_counter;
         mapping(address => uint256) user_greeting_counter;
+        uint256 total_native_sent;
+        uint256 total_erc20_sent;
+        mapping(address => uint256) user_native_sent;
+        mapping(address => uint256) user_erc20_sent;
     }
 }
 
@@ -73,6 +81,8 @@ impl YourContract {
         self.greeting.set_str("Building Unstoppable Apps!!!");
         self.premium.set(false);
         self.total_counter.set(U256::ZERO);
+        self.total_native_sent.set(U256::ZERO);
+        self.total_erc20_sent.set(U256::ZERO);
         Ok(())
     }
 
@@ -142,6 +152,202 @@ impl YourContract {
         }
 
         Ok(())
+    }
+
+    /// Send native token (ETH) to a single recipient
+    #[payable]
+    pub fn send_native_individual(&mut self, recipient: Address, amount: U256) {
+        // Transfer native token
+        let _ = self.vm().transfer_eth(recipient, amount);
+
+        let sender = self.vm().msg_sender();
+        
+        // Update counters
+        let current_total = self.total_native_sent.get();
+        self.total_native_sent.set(current_total + amount);
+        
+        let current_user = self.user_native_sent.get(sender);
+        self.user_native_sent.insert(sender, current_user + amount);
+
+        // Emit event
+        log(
+            self.vm(),
+            NativeTokenSent {
+                from: sender,
+                to: recipient,
+                amount,
+            },
+        );
+    }
+
+    /// Send native token (ETH) to multiple recipients in batch
+    #[payable]
+    pub fn send_native_batch(&mut self, recipients: Vec<Address>, amounts: Vec<U256>) {
+        let sender = self.vm().msg_sender();
+        let mut total_amount = U256::ZERO;
+
+        // Send to each recipient
+        for (i, recipient) in recipients.iter().enumerate() {
+            let amount = amounts[i];
+            let _ = self.vm().transfer_eth(*recipient, amount);
+            total_amount += amount;
+        }
+
+        // Update counters
+        let current_total = self.total_native_sent.get();
+        self.total_native_sent.set(current_total + total_amount);
+        
+        let current_user = self.user_native_sent.get(sender);
+        self.user_native_sent.insert(sender, current_user + total_amount);
+
+        // Emit event
+        log(
+            self.vm(),
+            BatchNativeTokenSent {
+                from: sender,
+                totalAmount: total_amount,
+                recipientCount: U256::from(recipients.len()),
+            },
+        );
+    }
+
+    /// Get total native tokens sent through the contract
+    pub fn get_total_native_sent(&self) -> U256 {
+        self.total_native_sent.get()
+    }
+
+    /// Get native tokens sent by a specific user
+    pub fn get_user_native_sent(&self, user: Address) -> U256 {
+        self.user_native_sent.get(user)
+    }
+
+    /// Send ERC-20 token to a single recipient
+    /// Note: User must approve this contract to spend tokens before calling
+    pub fn send_erc20_individual(&mut self, token: Address, recipient: Address, amount: U256) {
+        let sender = self.vm().msg_sender();
+
+        // Create transferFrom call data: transferFrom(address from, address to, uint256 amount)
+        // Function selector for transferFrom(address,address,uint256) is 0x23b872dd
+        let mut call_data = Vec::with_capacity(100);
+        call_data.extend_from_slice(&[0x23, 0xb8, 0x72, 0xdd]); // transferFrom selector
+        
+        // Encode sender address (32 bytes, left-padded)
+        let mut sender_bytes = [0u8; 32];
+        sender_bytes[12..32].copy_from_slice(sender.as_slice());
+        call_data.extend_from_slice(&sender_bytes);
+        
+        // Encode recipient address (32 bytes, left-padded)
+        let mut recipient_bytes = [0u8; 32];
+        recipient_bytes[12..32].copy_from_slice(recipient.as_slice());
+        call_data.extend_from_slice(&recipient_bytes);
+        
+        // Encode amount (32 bytes, big-endian)
+        let amount_bytes = amount.to_be_bytes::<32>();
+        call_data.extend_from_slice(&amount_bytes);
+
+        // Make the call to the ERC-20 contract using raw call
+        unsafe {
+            let mut return_size = 0usize;
+            let _ = self.vm().call_contract(
+                token.as_ptr(),
+                call_data.as_ptr(),
+                call_data.len(),
+                ptr::null(),
+                0,
+                &mut return_size,
+            );
+        }
+
+        // Update counters
+        let current_total = self.total_erc20_sent.get();
+        self.total_erc20_sent.set(current_total + amount);
+        
+        let current_user = self.user_erc20_sent.get(sender);
+        self.user_erc20_sent.insert(sender, current_user + amount);
+
+        // Emit event
+        log(
+            self.vm(),
+            ERC20TokenSent {
+                token,
+                from: sender,
+                to: recipient,
+                amount,
+            },
+        );
+    }
+
+    /// Send ERC-20 token to multiple recipients in batch
+    /// Note: User must approve this contract to spend tokens before calling
+    pub fn send_erc20_batch(&mut self, token: Address, recipients: Vec<Address>, amounts: Vec<U256>) {
+        let sender = self.vm().msg_sender();
+        let mut total_amount = U256::ZERO;
+
+        // Send to each recipient
+        for (i, recipient) in recipients.iter().enumerate() {
+            let amount = amounts[i];
+            
+            // Create transferFrom call data: transferFrom(address from, address to, uint256 amount)
+            let mut call_data = Vec::with_capacity(100);
+            call_data.extend_from_slice(&[0x23, 0xb8, 0x72, 0xdd]); // transferFrom selector
+            
+            // Encode sender address (32 bytes, left-padded)
+            let mut sender_bytes = [0u8; 32];
+            sender_bytes[12..32].copy_from_slice(sender.as_slice());
+            call_data.extend_from_slice(&sender_bytes);
+            
+            // Encode recipient address (32 bytes, left-padded)
+            let mut recipient_bytes = [0u8; 32];
+            recipient_bytes[12..32].copy_from_slice(recipient.as_slice());
+            call_data.extend_from_slice(&recipient_bytes);
+            
+            // Encode amount (32 bytes, big-endian)
+            let amount_bytes = amount.to_be_bytes::<32>();
+            call_data.extend_from_slice(&amount_bytes);
+
+            // Make the call to the ERC-20 contract using raw call
+            unsafe {
+                let mut return_size = 0usize;
+                let _ = self.vm().call_contract(
+                    token.as_ptr(),
+                    call_data.as_ptr(),
+                    call_data.len(),
+                    ptr::null(),
+                    0,
+                    &mut return_size,
+                );
+            }
+            
+            total_amount += amount;
+        }
+
+        // Update counters
+        let current_total = self.total_erc20_sent.get();
+        self.total_erc20_sent.set(current_total + total_amount);
+        
+        let current_user = self.user_erc20_sent.get(sender);
+        self.user_erc20_sent.insert(sender, current_user + total_amount);
+
+        // Emit event
+        log(
+            self.vm(),
+            BatchERC20TokenSent {
+                token,
+                from: sender,
+                totalAmount: total_amount,
+                recipientCount: U256::from(recipients.len()),
+            },
+        );
+    }
+
+    /// Get total ERC-20 tokens sent through the contract
+    pub fn get_total_erc20_sent(&self) -> U256 {
+        self.total_erc20_sent.get()
+    }
+
+    /// Get ERC-20 tokens sent by a specific user
+    pub fn get_user_erc20_sent(&self, user: Address) -> U256 {
+        self.user_erc20_sent.get(user)
     }
 
     /// Allow contract to receive ETH (equivalent to receive() function)
